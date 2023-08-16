@@ -4,6 +4,12 @@ variable "cluster_name" {
   description = "ARO cluster name"
 }
 
+variable "domain" {
+  type        = string
+  default     = null
+  description = "ARO domain"
+}
+
 variable "tags" {
   type = map(string)
   default = {

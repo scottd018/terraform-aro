@@ -66,6 +66,7 @@ resource "azureopenshift_redhatopenshift_cluster" "cluster" {
   }
 
   cluster_profile {
+    domain      = var.domain
     pull_secret = file(var.pull_secret_path)
     version     = var.aro_version
   }
