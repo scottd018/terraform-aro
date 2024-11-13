@@ -6,7 +6,7 @@ locals {
 resource "azurerm_resource_group" "main" {
   name     = "${local.name_prefix}-rg"
   location = var.location
-
+  tags     = var.tags
 }
 
 ## Network resources
@@ -20,16 +20,13 @@ resource "azurerm_virtual_network" "main" {
 }
 
 resource "azurerm_subnet" "control_plane_subnet" {
-  name                                           = "${local.name_prefix}-cp-subnet"
-  resource_group_name                            = azurerm_resource_group.main.name
-  virtual_network_name                           = azurerm_virtual_network.main.name
-  address_prefixes                               = [var.aro_control_subnet_cidr_block]
-  service_endpoints                              = ["Microsoft.Storage", "Microsoft.ContainerRegistry"]
+  name                                          = "${local.name_prefix}-cp-subnet"
+  resource_group_name                           = azurerm_resource_group.main.name
+  virtual_network_name                          = azurerm_virtual_network.main.name
+  address_prefixes                              = [var.aro_control_subnet_cidr_block]
+  service_endpoints                             = ["Microsoft.Storage", "Microsoft.ContainerRegistry"]
   private_link_service_network_policies_enabled = true
-  # enforce_private_link_service_network_policies  = true
-  private_endpoint_network_policies_enabled = true
-  # enforce_private_link_endpoint_network_policies = true
-
+  private_endpoint_network_policies_enabled     = true
 }
 
 resource "azurerm_subnet" "machine_subnet" {
@@ -40,49 +37,48 @@ resource "azurerm_subnet" "machine_subnet" {
   service_endpoints    = ["Microsoft.Storage", "Microsoft.ContainerRegistry"]
 }
 
-## ARO Cluster
+# resource "azurerm_network_security_group" "aro" {
+#   name                = "${local.name_prefix}-nsg"
+#   location            = azurerm_resource_group.main.location
+#   resource_group_name = azurerm_resource_group.main.name
+# }
 
-# Old unsupported provider: https://github.com/rh-mobb/terraform-provider-azureopenshift
+# resource "azurerm_network_security_rule" "aro_inbound" {
+#   name                        = "${local.name_prefix}-inbound"
+#   network_security_group_name = azurerm_network_security_group.aro.name
+#   resource_group_name         = azurerm_resource_group.main.name
+#   priority                    = 100
+#   direction                   = "Inbound"
+#   access                      = "Allow"
+#   protocol                    = "*"
+#   source_port_range           = "*"
+#   destination_port_range      = "*"
+#   source_address_prefix       = "*"
+#   destination_address_prefix  = "*"
+# }
 
-# resource "azureopenshift_redhatopenshift_cluster" "cluster" {
-#   name                   = var.cluster_name
-#   location               = azurerm_resource_group.main.location
-#   resource_group_name    = azurerm_resource_group.main.name
-#   cluster_resource_group = "${local.name_prefix}-cluster-rg"
-#   tags                   = var.tags
+# resource "azurerm_network_security_rule" "aro_outbound" {
+#   name                        = "${local.name_prefix}-outbound"
+#   network_security_group_name = azurerm_network_security_group.aro.name
+#   resource_group_name         = azurerm_resource_group.main.name
+#   priority                    = 100
+#   direction                   = "Outbound"
+#   access                      = "Allow"
+#   protocol                    = "*"
+#   source_port_range           = "*"
+#   destination_port_range      = "*"
+#   source_address_prefix       = "*"
+#   destination_address_prefix  = "*"
+# }
 
-#   master_profile {
-#     subnet_id = azurerm_subnet.control_plane_subnet.id
-#   }
-#   worker_profile {
-#     subnet_id = azurerm_subnet.machine_subnet.id
-#   }
-#   service_principal {
-#     client_id     = azuread_application.cluster.application_id
-#     client_secret = azuread_application_password.cluster.value
-#   }
+# resource "azurerm_subnet_network_security_group_association" "control_plane" {
+#   subnet_id                 = azurerm_subnet.control_plane_subnet.id
+#   network_security_group_id = azurerm_network_security_group.aro.id
+# }
 
-#   api_server_profile {
-#     visibility = var.api_server_profile
-#   }
-
-#   ingress_profile {
-#     visibility = var.ingress_profile
-#   }
-
-#   cluster_profile {
-#     pull_secret = file(var.pull_secret_path)
-#     version     = var.aro_version
-#   }
-
-#   network_profile {
-#     outbound_type = var.outbound_type
-#   }
-
-#   depends_on = [
-#     azurerm_role_assignment.vnet,
-#     azurerm_firewall_network_rule_collection.firewall_network_rules
-#   ]
+# resource "azurerm_subnet_network_security_group_association" "machine" {
+#   subnet_id                 = azurerm_subnet.machine_subnet.id
+#   network_security_group_id = azurerm_network_security_group.aro.id
 # }
 
 ## ARO Cluster
@@ -90,6 +86,9 @@ resource "azurerm_subnet" "machine_subnet" {
 # See docs at https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/redhat_openshift_cluster
 
 resource "azurerm_redhat_openshift_cluster" "cluster" {
+  # NOTE: use the installer service principal that we created to create our cluster
+  provider = azurerm.installer
+
   name                = var.cluster_name
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -121,6 +120,7 @@ resource "azurerm_redhat_openshift_cluster" "cluster" {
     outbound_type = var.outbound_type
     pod_cidr      = var.aro_pod_cidr_block
     service_cidr  = var.aro_service_cidr_block
+    #preconfigured_nsg_enabled = true
   }
 
   api_server_profile {
@@ -132,24 +132,12 @@ resource "azurerm_redhat_openshift_cluster" "cluster" {
   }
 
   service_principal {
-    client_id     = azuread_application.cluster.application_id
-    client_secret = azuread_application_password.cluster.value
+    client_id     = module.aro_permissions.cluster_service_principal_client_id
+    client_secret = module.aro_permissions.cluster_service_principal_client_secret
   }
 
   depends_on = [
-    azurerm_role_assignment.vnet,
-    azurerm_firewall_network_rule_collection.firewall_network_rules
+    module.aro_permissions,
+    azurerm_firewall_network_rule_collection.firewall_network_rules,
   ]
-}
-
-output "console_url" {
-  value = azurerm_redhat_openshift_cluster.cluster.console_url
-}
-
-output "api_server_ip" {
-  value = azurerm_redhat_openshift_cluster.cluster.api_server_profile[0].ip_address
-}
-
-output "ingress_ip" {
-  value = azurerm_redhat_openshift_cluster.cluster.ingress_profile[0].ip_address
 }
